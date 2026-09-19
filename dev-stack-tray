@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""System tray indicator for toggling the local dev services on and off."""
+import os
+import sys
+
+from PyQt6.QtCore import QLockFile, QProcess, QRectF, Qt, QTimer
+from PyQt6.QtGui import QAction, QColor, QCursor, QIcon, QPainter, QPixmap
+from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+
+# Listed in start order; stopped in the same call, systemd handles the rest.
+SERVICES = [
+    ("postgresql", "PostgreSQL"),
+    ("valkey", "Valkey (Redis)"),
+    ("php-fpm", "PHP-FPM"),
+    ("nginx", "nginx"),
+]
+UNITS = [unit for unit, _ in SERVICES]
+POLL_MS = 2000
+
+COLORS = {
+    "active": QColor("#3fb950"),
+    "activating": QColor("#d29922"),
+    "deactivating": QColor("#d29922"),
+    "reloading": QColor("#d29922"),
+    "failed": QColor("#f85149"),
+}
+INACTIVE_COLOR = QColor("#8b949e")
+
+
+def make_icon(states):
+    """A 2x2 grid of squares, one per service, colored by its state."""
+    size = 64
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    gap, cell = 6, 26
+    for i, unit in enumerate(UNITS):
+        painter.setBrush(COLORS.get(states.get(unit), INACTIVE_COLOR))
+        x = 3 + (i % 2) * (cell + gap)
+        y = 3 + (i // 2) * (cell + gap)
+        painter.drawRoundedRect(QRectF(x, y, cell, cell), 6, 6)
+    painter.end()
+    return QIcon(pixmap)
+
+
+class DevStackTray:
+    def __init__(self, app):
+        self.app = app
+        self.states = {}
+        self.busy = False
+
+        self.tray = QSystemTrayIcon()
+        self.menu = QMenu()
+
+        self.header = self.menu.addAction("")
+        self.header.setEnabled(False)
+        self.menu.addSeparator()
+        self.menu.addAction("Start all", lambda: self.run("start", UNITS))
+        self.menu.addAction("Stop all", lambda: self.run("stop", UNITS))
+        self.menu.addSeparator()
+
+        self.actions = {}
+        for unit, label in SERVICES:
+            action = QAction(label, self.menu)
+            action.setCheckable(True)
+            action.triggered.connect(
+                lambda checked, u=unit: self.run("start" if checked else "stop", [u])
+            )
+            self.menu.addAction(action)
+            self.actions[unit] = action
+
+        self.menu.addSeparator()
+        self.menu.addAction("Quit", app.quit)
+
+        self.tray.setContextMenu(self.menu)
+        self.tray.activated.connect(self.on_activated)
+
+        self.refresh_ui()
+        self.tray.show()
+
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.poll)
+        self.timer.start(POLL_MS)
+        self.poll()
+
+    def on_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.menu.popup(QCursor.pos())
+
+    def poll(self):
+        proc = QProcess()
+        proc.setProgram("systemctl")
+        proc.setArguments(["is-active", *UNITS])
+        proc.finished.connect(lambda *_: self.on_polled(proc))
+        proc.start()
+        self._poll_proc = proc
+
+    def on_polled(self, proc):
+        lines = bytes(proc.readAllStandardOutput()).decode().split()
+        if len(lines) == len(UNITS):
+            self.states = dict(zip(UNITS, lines))
+            self.refresh_ui()
+
+    def refresh_ui(self):
+        running = [u for u in UNITS if self.states.get(u) == "active"]
+        for unit, action in self.actions.items():
+            action.blockSignals(True)
+            action.setChecked(unit in running)
+            action.blockSignals(False)
+        self.header.setText(f"Dev services: {len(running)}/{len(UNITS)} running")
+        self.tray.setIcon(make_icon(self.states))
+        lines = [f"{label}: {self.states.get(unit, '?')}" for unit, label in SERVICES]
+        self.tray.setToolTip("\n".join(lines))
+
+    def run(self, verb, units):
+        proc = QProcess()
+        proc.setProgram("systemctl")
+        proc.setArguments([verb, *units])
+        proc.finished.connect(lambda code, *_: self.on_run_done(proc, verb, units, code))
+        proc.start()
+        self._run_proc = proc
+
+    def on_run_done(self, proc, verb, units, code):
+        if code != 0:
+            err = bytes(proc.readAllStandardError()).decode().strip()
+            self.tray.showMessage(
+                f"Failed to {verb} {', '.join(units)}",
+                err or f"systemctl exited with {code}",
+                QSystemTrayIcon.MessageIcon.Warning,
+                5000,
+            )
+        self.poll()
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+    app.setApplicationName("dev-stack-tray")
+
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
+    lock = QLockFile(os.path.join(runtime_dir, "dev-stack-tray.lock"))
+    if not lock.tryLock(100):
+        return 0
+
+    tray = DevStackTray(app)  # noqa: F841 - kept alive for the event loop
+    return app.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
