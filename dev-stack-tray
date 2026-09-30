@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """System tray indicator for toggling the local dev services on and off."""
+import math
 import os
 import sys
 
@@ -13,9 +14,14 @@ SERVICES = [
     ("valkey", "Valkey (Redis)"),
     ("php-fpm", "PHP-FPM"),
     ("nginx", "nginx"),
+    ("elasticsearch", "Elasticsearch"),
 ]
 UNITS = [unit for unit, _ in SERVICES]
-POLL_MS = 2000
+# Poll rarely while nothing is happening; poll quickly while a service is changing
+# state or the menu is open so the UI stays responsive.
+IDLE_POLL_MS = 30000
+FAST_POLL_MS = 2000
+TRANSITIONAL = {"activating", "deactivating", "reloading"}
 
 COLORS = {
     "active": QColor("#3fb950"),
@@ -28,18 +34,20 @@ INACTIVE_COLOR = QColor("#8b949e")
 
 
 def make_icon(states):
-    """A 2x2 grid of squares, one per service, colored by its state."""
+    """A square grid of squares, one per service, colored by its state."""
     size = 64
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setPen(Qt.PenStyle.NoPen)
-    gap, cell = 6, 26
+    margin, gap = 3, 6
+    cols = math.ceil(math.sqrt(len(UNITS)))
+    cell = (size - 2 * margin - (cols - 1) * gap) / cols
     for i, unit in enumerate(UNITS):
         painter.setBrush(COLORS.get(states.get(unit), INACTIVE_COLOR))
-        x = 3 + (i % 2) * (cell + gap)
-        y = 3 + (i // 2) * (cell + gap)
+        x = margin + (i % cols) * (cell + gap)
+        y = margin + (i // cols) * (cell + gap)
         painter.drawRoundedRect(QRectF(x, y, cell, cell), 6, 6)
     painter.end()
     return QIcon(pixmap)
@@ -74,6 +82,10 @@ class DevStackTray:
         self.menu.addSeparator()
         self.menu.addAction("Quit", app.quit)
 
+        self.menu_open = False
+        self.menu.aboutToShow.connect(self.on_menu_shown)
+        self.menu.aboutToHide.connect(self.on_menu_hidden)
+
         self.tray.setContextMenu(self.menu)
         self.tray.activated.connect(self.on_activated)
 
@@ -82,8 +94,21 @@ class DevStackTray:
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.poll)
-        self.timer.start(POLL_MS)
+        self.timer.start(FAST_POLL_MS)
         self.poll()
+
+    def on_menu_shown(self):
+        self.menu_open = True
+        self.poll()
+        self.update_interval()
+
+    def on_menu_hidden(self):
+        self.menu_open = False
+        self.update_interval()
+
+    def update_interval(self):
+        busy = self.menu_open or any(s in TRANSITIONAL for s in self.states.values())
+        self.timer.setInterval(FAST_POLL_MS if busy else IDLE_POLL_MS)
 
     def on_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -102,6 +127,7 @@ class DevStackTray:
         if len(lines) == len(UNITS):
             self.states = dict(zip(UNITS, lines))
             self.refresh_ui()
+            self.update_interval()
 
     def refresh_ui(self):
         running = [u for u in UNITS if self.states.get(u) == "active"]
@@ -121,6 +147,8 @@ class DevStackTray:
         proc.finished.connect(lambda code, *_: self.on_run_done(proc, verb, units, code))
         proc.start()
         self._run_proc = proc
+        self.timer.setInterval(FAST_POLL_MS)
+        self.poll()
 
     def on_run_done(self, proc, verb, units, code):
         if code != 0:

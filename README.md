@@ -4,7 +4,7 @@ A system tray indicator for switching local dev services on and off without lett
 It talks to systemd, shows the state of each service in the tray icon, and lets you start or stop everything
 at once or one service at a time.
 
-The icon is a 2x2 grid with one square per service:
+The icon is a grid with one square per service:
 
 | Color | Meaning |
 |-------|---------|
@@ -16,7 +16,7 @@ The icon is a 2x2 grid with one square per service:
 Right-click (or left-click) the icon for a menu with **Start all**, **Stop all** and a checkbox per service.
 Hover the icon to see every service's state.
 
-The default services are `postgresql`, `valkey`, `php-fpm` and `nginx`.
+The default services are `postgresql`, `valkey`, `php-fpm`, `nginx` and `elasticsearch`.
 
 ## Setup from scratch
 
@@ -29,6 +29,10 @@ shows StatusNotifierItem tray icons and the packages below have equivalents.
 sudo pacman -S nginx php php-fpm postgresql valkey python-pyqt6
 ```
 
+Elasticsearch is not in the official repositories; install it from the AUR (for example
+`yay -S elasticsearch`), or drop it from `SERVICES` if you don't need it. Note that recent versions
+need a fair amount of RAM, which is a good reason to keep it off until you need it.
+
 PostgreSQL needs its data directory initialised once:
 
 ```sh
@@ -40,7 +44,7 @@ sudo -iu postgres initdb --locale=C.UTF-8 -E UTF8 -D /var/lib/postgres/data
 The tray toggles services on demand, so they should not be enabled:
 
 ```sh
-sudo systemctl disable nginx php-fpm postgresql valkey
+sudo systemctl disable nginx php-fpm postgresql valkey elasticsearch
 ```
 
 ### 3. Get the code and install the indicator
@@ -67,7 +71,7 @@ services, edit `polkit/50-dev-stack.rules` and set your user name, then install 
 sudo install -m 644 polkit/50-dev-stack.rules /etc/polkit-1/rules.d/
 ```
 
-The rule only covers the local, active session of that user, the four units listed in the file, and the
+The rule only covers the local, active session of that user, the units listed in the file, and the
 `start`, `stop` and `restart` actions.
 
 ## Changing the services

@@ -13,7 +13,7 @@ cat > "${autostart_dir}/dev-stack-tray.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=Dev Stack Tray
-Comment=Toggle nginx, PHP-FPM, PostgreSQL and Valkey from the system tray
+Comment=Toggle nginx, PHP-FPM, PostgreSQL, Valkey and Elasticsearch from the system tray
 Exec=${bin_dir}/dev-stack-tray
 Icon=preferences-system-services
 Terminal=false

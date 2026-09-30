@@ -3,7 +3,8 @@
 polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.systemd1.manage-units" &&
         subject.user == "went" && subject.local && subject.active) {
-        var units = ["nginx.service", "php-fpm.service", "postgresql.service", "valkey.service"];
+        var units = ["nginx.service", "php-fpm.service", "postgresql.service", "valkey.service",
+                     "elasticsearch.service"];
         var verbs = ["start", "stop", "restart"];
         if (units.indexOf(action.lookup("unit")) >= 0 && verbs.indexOf(action.lookup("verb")) >= 0) {
             return polkit.Result.YES;
