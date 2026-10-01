@@ -141,21 +141,37 @@ class DevStackTray:
         self.tray.setToolTip("\n".join(lines))
 
     def run(self, verb, units):
-        proc = QProcess()
-        proc.setProgram("systemctl")
-        proc.setArguments([verb, *units])
-        proc.finished.connect(lambda code, *_: self.on_run_done(proc, verb, units, code))
-        proc.start()
-        self._run_proc = proc
+        # One systemctl call per unit: a multi-unit call is sent to systemd as a single
+        # batched job request, which polkit can't match against the per-unit rule.
+        self._run_procs = getattr(self, "_run_procs", set())
+        errors = []
+        pending = set()
+
+        def on_finished(proc, unit, code):
+            if code != 0:
+                err = bytes(proc.readAllStandardError()).decode().strip()
+                errors.append(f"{unit}: {err or f'systemctl exited with {code}'}")
+            pending.discard(proc)
+            self._run_procs.discard(proc)
+            if not pending:
+                self.on_run_done(verb, units, errors)
+
+        for unit in units:
+            proc = QProcess()
+            proc.setProgram("systemctl")
+            proc.setArguments([verb, unit])
+            proc.finished.connect(lambda code, *_, p=proc, u=unit: on_finished(p, u, code))
+            pending.add(proc)
+            self._run_procs.add(proc)
+            proc.start()
         self.timer.setInterval(FAST_POLL_MS)
         self.poll()
 
-    def on_run_done(self, proc, verb, units, code):
-        if code != 0:
-            err = bytes(proc.readAllStandardError()).decode().strip()
+    def on_run_done(self, verb, units, errors):
+        if errors:
             self.tray.showMessage(
                 f"Failed to {verb} {', '.join(units)}",
-                err or f"systemctl exited with {code}",
+                "\n".join(errors),
                 QSystemTrayIcon.MessageIcon.Warning,
                 5000,
             )
