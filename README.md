@@ -56,7 +56,7 @@ cd ~/git/WentTheFox/DevStackTray
 ./install.sh
 ```
 
-`install.sh` symlinks `dev-stack-tray` into `~/.local/bin` and adds an autostart entry, so the indicator
+`install.sh` symlinks `dev-stack-tray` into `~/.local/bin` and adds an application menu entry and an autostart entry, so the indicator
 starts with your desktop session. Launch it right away without logging out again:
 
 ```sh
@@ -66,10 +66,10 @@ starts with your desktop session. Launch it right away without logging out again
 ### 4. Allow toggling without a password (optional)
 
 By default each start or stop asks for authentication through polkit. To skip the prompt for the listed
-services, edit `polkit/50-dev-stack.rules` and set your user name, then install it:
+services, answer `y` when `install.sh` asks about it, or install the rule by hand with your user name substituted for the `@USER@` placeholder:
 
 ```sh
-sudo install -m 644 polkit/50-dev-stack.rules /etc/polkit-1/rules.d/
+sed "s/@USER@/$USER/g" polkit/50-dev-stack.rules | sudo tee /etc/polkit-1/rules.d/50-dev-stack.rules >/dev/null
 ```
 
 The rule only covers the local, active session of that user, the units listed in the file, and the
@@ -84,7 +84,7 @@ Edit the `SERVICES` list at the top of `dev-stack-tray`. Each entry is a systemd
 ## Uninstall
 
 ```sh
-rm ~/.local/bin/dev-stack-tray ~/.config/autostart/dev-stack-tray.desktop
+rm ~/.local/bin/dev-stack-tray ~/.config/autostart/dev-stack-tray.desktop ~/.local/share/applications/dev-stack-tray.desktop
 sudo rm -f /etc/polkit-1/rules.d/50-dev-stack.rules
 ```
 

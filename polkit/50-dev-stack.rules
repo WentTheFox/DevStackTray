@@ -1,8 +1,8 @@
-// Let the local, active session of "went" start/stop the dev services without a password.
-// Install to /etc/polkit-1/rules.d/ and adjust the user name and unit list as needed.
+// Let the local, active session of "@USER@" start/stop the dev services without a password.
+// The user name is filled in by the README install command; adjust the unit list as needed.
 polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.systemd1.manage-units" &&
-        subject.user == "went" && subject.local && subject.active) {
+        subject.user == "@USER@" && subject.local && subject.active) {
         var units = ["nginx.service", "php-fpm.service", "postgresql.service", "valkey.service",
                      "opensearch.service"];
         var verbs = ["start", "stop", "restart"];
