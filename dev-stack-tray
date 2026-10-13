@@ -134,6 +134,8 @@ class DevStackTray:
         for unit, action in self.actions.items():
             action.blockSignals(True)
             action.setChecked(unit in running)
+            # Wait for a starting/stopping/reloading service to settle before allowing a toggle.
+            action.setEnabled(self.states.get(unit) not in TRANSITIONAL)
             action.blockSignals(False)
         self.header.setText(f"Dev services: {len(running)}/{len(UNITS)} running")
         self.tray.setIcon(make_icon(self.states))
