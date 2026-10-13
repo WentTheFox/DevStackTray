@@ -16,7 +16,7 @@ The icon is a grid with one square per service:
 Right-click (or left-click) the icon for a menu with **Start all**, **Stop all** and a checkbox per service.
 Hover the icon to see every service's state.
 
-The default services are `postgresql`, `valkey`, `php-fpm`, `nginx` and `elasticsearch`.
+The default services are `postgresql`, `valkey`, `php-fpm`, `nginx` and `opensearch`.
 
 ## Setup from scratch
 
@@ -26,12 +26,13 @@ shows StatusNotifierItem tray icons and the packages below have equivalents.
 ### 1. Install the services and PyQt6
 
 ```sh
-sudo pacman -S nginx php php-fpm postgresql valkey python-pyqt6
+sudo pacman -S nginx php php-fpm postgresql valkey opensearch python-pyqt6
 ```
 
-Elasticsearch is not in the official repositories; install it from the AUR (for example
-`yay -S elasticsearch`), or drop it from `SERVICES` if you don't need it. Note that recent versions
-need a fair amount of RAM, which is a good reason to keep it off until you need it.
+OpenSearch is the Apache-licensed fork of Elasticsearch and is API-compatible for most dev use. Recent
+Elasticsearch client libraries may refuse to talk to it, so use the OpenSearch client if that happens.
+Drop it from `SERVICES` if you don't need it. It needs a fair amount of RAM, which is a good reason to keep
+it off until you need it.
 
 PostgreSQL needs its data directory initialised once:
 
@@ -44,7 +45,7 @@ sudo -iu postgres initdb --locale=C.UTF-8 -E UTF8 -D /var/lib/postgres/data
 The tray toggles services on demand, so they should not be enabled:
 
 ```sh
-sudo systemctl disable nginx php-fpm postgresql valkey elasticsearch
+sudo systemctl disable nginx php-fpm postgresql valkey opensearch
 ```
 
 ### 3. Get the code and install the indicator

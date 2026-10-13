@@ -14,7 +14,7 @@ SERVICES = [
     ("valkey", "Valkey (Redis)"),
     ("php-fpm", "PHP-FPM"),
     ("nginx", "nginx"),
-    ("elasticsearch", "Elasticsearch"),
+    ("opensearch", "OpenSearch"),
 ]
 UNITS = [unit for unit, _ in SERVICES]
 # Poll rarely while nothing is happening; poll quickly while a service is changing
