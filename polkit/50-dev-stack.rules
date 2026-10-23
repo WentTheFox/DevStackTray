@@ -1,10 +1,9 @@
 // Let the local, active session of "@USER@" start/stop the dev services without a password.
-// The user name is filled in by the README install command; adjust the unit list as needed.
+// The user name is filled in by the README install command; the unit list comes from the tray's services (including services.local.json).
 polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.systemd1.manage-units" &&
         subject.user == "@USER@" && subject.local && subject.active) {
-        var units = ["nginx.service", "php-fpm.service", "postgresql.service", "valkey.service",
-                     "opensearch.service"];
+        var units = @UNITS@;
         var verbs = ["start", "stop", "restart"];
         if (units.indexOf(action.lookup("unit")) >= 0 && verbs.indexOf(action.lookup("verb")) >= 0) {
             return polkit.Result.YES;

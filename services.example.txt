@@ -1,0 +1,5 @@
+# Extra services for the tray: one per line as `unit Label`.
+# The unit is a systemd unit name (".service" is optional); the label is shown in the menu
+# and defaults to the unit name. Blank lines and # comments are ignored.
+custom-service CustomService
+

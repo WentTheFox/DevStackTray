@@ -35,7 +35,8 @@ DESKTOP
 rules_target="/etc/polkit-1/rules.d/50-dev-stack.rules"
 read -r -p "Allow ${USER} to start/stop the services without a password (installs ${rules_target} with sudo)? [y/N] " answer || answer=""
 if [[ "${answer}" =~ ^[Yy]$ ]]; then
-    sed "s/@USER@/${USER}/g" "${repo_dir}/polkit/50-dev-stack.rules" | sudo tee "${rules_target}" >/dev/null
+    units_json="$("${repo_dir}/dev-stack-tray" --list-units | sed 's/.*/"&"/' | paste -sd, | sed 's/^/[/; s/$/]/')"
+    sed -e "s/@USER@/${USER}/g" -e "s/@UNITS@/${units_json}/" "${repo_dir}/polkit/50-dev-stack.rules" | sudo tee "${rules_target}" >/dev/null
     echo "Installed polkit rule."
 fi
 

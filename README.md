@@ -77,9 +77,17 @@ The rule only covers the local, active session of that user, the units listed in
 
 ## Changing the services
 
-Edit the `SERVICES` list at the top of `dev-stack-tray`. Each entry is a systemd unit name (without
-`.service`) and the label shown in the menu. If you change the list, update the `units` array in
-`polkit/50-dev-stack.rules` to match.
+To add your own services without touching the tracked code, copy the example to an untracked file:
+
+```sh
+cp services.example.txt services.local.txt
+```
+
+`services.local.txt` is git-ignored and holds one service per line as `unit Label`, with `#` comments allowed
+(the example adds `jellyfin-server`). They are appended after the defaults; restart the indicator to
+pick up changes. Re-run `./install.sh` and answer `y` to the polkit prompt so the passwordless rule covers the new units.
+
+To change the built-in defaults, edit the `SERVICES` list at the top of `dev-stack-tray`.
 
 ## Uninstall
 

@@ -16,6 +16,33 @@ SERVICES = [
     ("nginx", "nginx"),
     ("opensearch", "OpenSearch"),
 ]
+
+
+def load_custom_services():
+    """Read extra services from the untracked services.local.txt next to this script.
+
+    One service per line as `unit Label`; blank lines and `#` comments are ignored.
+    """
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "services.local.txt")
+    try:
+        with open(path) as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        print(f"Ignoring {path}: {e}", file=sys.stderr)
+        return []
+    services = []
+    for line in lines:
+        line = line.split("#", 1)[0].strip()
+        if line:
+            unit, _, label = line.partition(" ")
+            unit = unit.removesuffix(".service")
+            services.append((unit, label.strip() or unit))
+    return services
+
+
+SERVICES += [s for s in load_custom_services() if s[0] not in {u for u, _ in SERVICES}]
 UNITS = [unit for unit, _ in SERVICES]
 # Poll rarely while nothing is happening; poll quickly while a service is changing
 # state or the menu is open so the UI stays responsive.
@@ -181,6 +208,10 @@ class DevStackTray:
 
 
 def main():
+    if "--list-units" in sys.argv:
+        # Used by install.sh to fill in the polkit rule.
+        print("\n".join(f"{unit}.service" for unit in UNITS))
+        return
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("dev-stack-tray")
