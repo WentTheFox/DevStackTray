@@ -37,7 +37,6 @@ def load_custom_services():
         line = line.split("#", 1)[0].strip()
         if line:
             unit, _, label = line.partition(" ")
-            unit = unit.removesuffix(".service")
             services.append((unit, label.strip() or unit))
     return services
 
@@ -210,7 +209,7 @@ class DevStackTray:
 def main():
     if "--list-units" in sys.argv:
         # Used by install.sh to fill in the polkit rule.
-        print("\n".join(f"{unit}.service" for unit in UNITS))
+        print("\n".join(unit if "." in unit else f"{unit}.service" for unit in UNITS))
         return
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
