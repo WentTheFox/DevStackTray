@@ -22,6 +22,7 @@ def load_custom_services():
     """Read extra services from the untracked services.local.txt next to this script.
 
     One service per line as `unit Label`; blank lines and `#` comments are ignored.
+    Prefix the unit with `user:` for a unit in the systemd user manager (`systemctl --user`).
     """
     path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "services.local.txt")
     try:
@@ -43,6 +44,15 @@ def load_custom_services():
 
 SERVICES += [s for s in load_custom_services() if s[0] not in {u for u, _ in SERVICES}]
 UNITS = [unit for unit, _ in SERVICES]
+
+
+def split_unit(unit):
+    """Return (systemctl scope args, plain unit name) for a possibly `user:`-prefixed unit."""
+    if unit.startswith("user:"):
+        return ["--user"], unit[len("user:"):]
+    return [], unit
+
+
 # Poll rarely while nothing is happening; poll quickly while a service is changing
 # state or the menu is open so the UI stays responsive.
 IDLE_POLL_MS = 30000
@@ -141,17 +151,34 @@ class DevStackTray:
             self.menu.popup(QCursor.pos())
 
     def poll(self):
-        proc = QProcess()
-        proc.setProgram("systemctl")
-        proc.setArguments(["is-active", *UNITS])
-        proc.finished.connect(lambda *_: self.on_polled(proc))
-        proc.start()
-        self._poll_proc = proc
+        # One is-active call per scope (system / user); apply once all have answered.
+        groups = {}
+        for unit in UNITS:
+            scope, name = split_unit(unit)
+            groups.setdefault(tuple(scope), []).append((unit, name))
+        self._poll_procs = procs = []
+        results = {}
 
-    def on_polled(self, proc):
-        lines = bytes(proc.readAllStandardOutput()).decode().split()
-        if len(lines) == len(UNITS):
-            self.states = dict(zip(UNITS, lines))
+        def on_finished(proc, entries):
+            lines = bytes(proc.readAllStandardOutput()).decode().split()
+            if len(lines) == len(entries):
+                results.update(zip((u for u, _ in entries), lines))
+            procs.remove(proc)
+            if not procs:
+                self.on_polled(results)
+
+        for scope, entries in groups.items():
+            proc = QProcess()
+            proc.setProgram("systemctl")
+            proc.setArguments([*scope, "is-active", *(n for _, n in entries)])
+            proc.finished.connect(lambda *_, p=proc, e=entries: on_finished(p, e))
+            procs.append(proc)
+        for proc in list(procs):
+            proc.start()
+
+    def on_polled(self, results):
+        if results:
+            self.states.update(results)
             self.refresh_ui()
             self.update_interval()
 
@@ -187,7 +214,8 @@ class DevStackTray:
         for unit in units:
             proc = QProcess()
             proc.setProgram("systemctl")
-            proc.setArguments([verb, unit])
+            scope, name = split_unit(unit)
+            proc.setArguments([*scope, verb, name])
             proc.finished.connect(lambda code, *_, p=proc, u=unit: on_finished(p, u, code))
             pending.add(proc)
             self._run_procs.add(proc)
@@ -209,7 +237,8 @@ class DevStackTray:
 def main():
     if "--list-units" in sys.argv:
         # Used by install.sh to fill in the polkit rule.
-        print("\n".join(unit if "." in unit else f"{unit}.service" for unit in UNITS))
+        # User-manager units need no polkit rule.
+        print("\n".join(unit if "." in unit else f"{unit}.service" for unit in UNITS if not unit.startswith("user:")))
         return
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)

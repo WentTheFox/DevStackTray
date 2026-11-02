@@ -84,7 +84,7 @@ cp services.example.txt services.local.txt
 ```
 
 `services.local.txt` is git-ignored and holds one service per line as `unit Label`, with `#` comments allowed
-(the example adds `jellyfin-server`). They are appended after the defaults; restart the indicator to
+(the example adds `jellyfin-server`). Prefix a unit with `user:` (e.g. `user:foo.service Foo`) to manage it in the systemd user manager instead; those need no polkit rule. They are appended after the defaults; restart the indicator to
 pick up changes. Re-run `./install.sh` and answer `y` to the polkit prompt so the passwordless rule covers the new units.
 
 To change the built-in defaults, edit the `SERVICES` list at the top of `dev-stack-tray`.
