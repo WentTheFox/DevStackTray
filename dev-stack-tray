@@ -4,9 +4,12 @@ import math
 import os
 import sys
 
+import dbus
+import dbus.service
+from dbus.mainloop.glib import DBusGMainLoop
 from PyQt6.QtCore import QLockFile, QProcess, QRectF, Qt, QTimer
-from PyQt6.QtGui import QAction, QColor, QCursor, QIcon, QPainter, QPixmap
-from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+from PyQt6.QtGui import QColor, QImage, QPainter
+from PyQt6.QtWidgets import QApplication
 
 # Listed in start order; stopped in the same call, systemd handles the rest.
 SERVICES = [
@@ -69,12 +72,18 @@ COLORS = {
 INACTIVE_COLOR = QColor("#8b949e")
 
 
+ICON_SIZE = 64
+
+
 def make_icon(states):
-    """A square grid of squares, one per service, colored by its state."""
-    size = 64
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
+    """A square grid of squares, one per service, colored by its state.
+
+    Returns (width, height, ARGB32 bytes in network byte order) as the StatusNotifierItem spec wants.
+    """
+    size = ICON_SIZE
+    image = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setPen(Qt.PenStyle.NoPen)
     margin, gap = 3, 6
@@ -86,52 +95,326 @@ def make_icon(states):
         y = margin + (i // cols) * (cell + gap)
         painter.drawRoundedRect(QRectF(x, y, cell, cell), 6, 6)
     painter.end()
-    return QIcon(pixmap)
+    rgba = image.convertToFormat(QImage.Format.Format_RGBA8888)
+    rgba = bytes(rgba.constBits().asarray(size * size * 4))
+    argb = bytearray(len(rgba))
+    argb[0::4], argb[1::4], argb[2::4], argb[3::4] = rgba[3::4], rgba[0::4], rgba[1::4], rgba[2::4]
+    return size, size, bytes(argb)
+
+
+PROPERTIES_IFACE = "org.freedesktop.DBus.Properties"
+SNI_IFACE = "org.kde.StatusNotifierItem"
+SNI_PATH = "/StatusNotifierItem"
+WATCHER_NAME = "org.kde.StatusNotifierWatcher"
+MENU_IFACE = "com.canonical.dbusmenu"
+MENU_PATH = "/MenuBar"
+EMPTY_PIXMAPS = dbus.Array([], signature="(iiay)")
+
+
+class PropertyObject(dbus.service.Object):
+    """dbus-python doesn't implement org.freedesktop.DBus.Properties; do it from `dbus_properties`."""
+
+    dbus_properties = {}  # interface -> {name: getter}
+
+    def _props(self, interface):
+        try:
+            return self.dbus_properties[interface]
+        except KeyError:
+            raise dbus.exceptions.DBusException(f"Unknown interface {interface}")
+
+    @dbus.service.method(PROPERTIES_IFACE, in_signature="ss", out_signature="v")
+    def Get(self, interface, name):
+        props = self._props(interface)
+        if name not in props:
+            raise dbus.exceptions.DBusException(f"Unknown property {name}")
+        return props[name](self)
+
+    @dbus.service.method(PROPERTIES_IFACE, in_signature="s", out_signature="a{sv}")
+    def GetAll(self, interface):
+        return dbus.Dictionary({n: g(self) for n, g in self._props(interface).items()}, signature="sv")
+
+    @dbus.service.method(PROPERTIES_IFACE, in_signature="ssv")
+    def Set(self, interface, name, value):
+        raise dbus.exceptions.DBusException("Properties are read-only")
+
+
+class StatusNotifierItem(PropertyObject):
+    """The tray icon. ItemIsMenu makes the host show the menu on left click too."""
+
+    def __init__(self, bus, title):
+        self.bus = bus
+        self.title = title
+        self.pixmap = (0, 0, b"")
+        self.tooltip = ""
+        self.bus_name = dbus.service.BusName(f"org.kde.StatusNotifierItem-{os.getpid()}-1", bus)
+        super().__init__(bus, SNI_PATH)
+        bus.watch_name_owner(WATCHER_NAME, self.on_watcher_owner)
+
+    def on_watcher_owner(self, owner):
+        # Fires at startup and whenever the watcher (the panel) restarts; register each time.
+        if not owner:
+            return
+        watcher = self.bus.get_object(WATCHER_NAME, "/StatusNotifierWatcher")
+        watcher.RegisterStatusNotifierItem(
+            self.bus_name.get_name(),
+            dbus_interface=WATCHER_NAME,
+            reply_handler=lambda: None,
+            error_handler=lambda e: print(f"Could not register tray icon: {e}", file=sys.stderr),
+        )
+
+    def set_icon(self, pixmap):
+        self.pixmap = pixmap
+        self.NewIcon()
+
+    def set_tooltip(self, text):
+        self.tooltip = text
+        self.NewToolTip()
+
+    def _pixmaps(self):
+        width, height, data = self.pixmap
+        if not data:
+            return EMPTY_PIXMAPS
+        pixmap = dbus.Struct(
+            (dbus.Int32(width), dbus.Int32(height), dbus.Array(data, signature="y")), signature="iiay"
+        )
+        return dbus.Array([pixmap], signature="(iiay)")
+
+    def _tooltip(self):
+        return dbus.Struct(
+            ("", EMPTY_PIXMAPS, self.title, self.tooltip.replace("\n", "<br/>")), signature="sa(iiay)ss"
+        )
+
+    dbus_properties = {
+        SNI_IFACE: {
+            "Category": lambda s: dbus.String("ApplicationStatus"),
+            "Id": lambda s: dbus.String("dev-stack-tray"),
+            "Title": lambda s: dbus.String(s.title),
+            "Status": lambda s: dbus.String("Active"),
+            "WindowId": lambda s: dbus.UInt32(0),
+            "IconName": lambda s: dbus.String(""),
+            "IconPixmap": lambda s: s._pixmaps(),
+            "OverlayIconName": lambda s: dbus.String(""),
+            "OverlayIconPixmap": lambda s: EMPTY_PIXMAPS,
+            "AttentionIconName": lambda s: dbus.String(""),
+            "AttentionIconPixmap": lambda s: EMPTY_PIXMAPS,
+            "AttentionMovieName": lambda s: dbus.String(""),
+            "ToolTip": lambda s: s._tooltip(),
+            "ItemIsMenu": lambda s: dbus.Boolean(True),
+            "Menu": lambda s: dbus.ObjectPath(MENU_PATH),
+        }
+    }
+
+    # The host shows the menu itself because ItemIsMenu is set; these are only for hosts that ignore it.
+    @dbus.service.method(SNI_IFACE, in_signature="ii")
+    def ContextMenu(self, x, y):
+        pass
+
+    @dbus.service.method(SNI_IFACE, in_signature="ii")
+    def Activate(self, x, y):
+        pass
+
+    @dbus.service.method(SNI_IFACE, in_signature="ii")
+    def SecondaryActivate(self, x, y):
+        pass
+
+    @dbus.service.method(SNI_IFACE, in_signature="is")
+    def Scroll(self, delta, orientation):
+        pass
+
+    @dbus.service.signal(SNI_IFACE)
+    def NewIcon(self):
+        pass
+
+    @dbus.service.signal(SNI_IFACE)
+    def NewToolTip(self):
+        pass
+
+
+class DBusMenu(PropertyObject):
+    """A flat com.canonical.dbusmenu menu. Items are added up front and then updated in place."""
+
+    def __init__(self, bus, on_open=None, on_close=None):
+        super().__init__(bus, MENU_PATH)
+        self.items = {0: {"children-display": dbus.String("submenu")}}  # id -> property dict; 0 is the root
+        self.callbacks = {}
+        self.order = []
+        self.revision = 1
+        self.on_open = on_open
+        self.on_close = on_close
+        self.pending = set()
+
+    def add(self, label=None, callback=None, separator=False, checkable=False):
+        item_id = len(self.order) + 1
+        props = {"visible": dbus.Boolean(True), "enabled": dbus.Boolean(True)}
+        if separator:
+            props["type"] = dbus.String("separator")
+        else:
+            props["label"] = dbus.String(label or "")
+        if checkable:
+            props["toggle-type"] = dbus.String("checkmark")
+            props["toggle-state"] = dbus.Int32(0)
+        self.items[item_id] = props
+        self.order.append(item_id)
+        if callback:
+            self.callbacks[item_id] = callback
+        return item_id
+
+    def update(self, item_id, **changes):
+        """Change properties (label, enabled, checked) and queue them for the next flush()."""
+        props = self.items[item_id]
+        if "label" in changes:
+            changes["label"] = dbus.String(changes["label"])
+        if "enabled" in changes:
+            changes["enabled"] = dbus.Boolean(changes["enabled"])
+        if "checked" in changes:
+            changes["toggle-state"] = dbus.Int32(1 if changes.pop("checked") else 0)
+        for name, value in changes.items():
+            if props.get(name) != value:
+                props[name] = value
+                self.pending.add((item_id, name))
+
+    def flush(self):
+        if not self.pending:
+            return
+        by_item = {}
+        for item_id, name in self.pending:
+            by_item.setdefault(item_id, {})[name] = self.items[item_id][name]
+        self.pending.clear()
+        updated = dbus.Array(
+            [
+                dbus.Struct((dbus.Int32(i), dbus.Dictionary(p, signature="sv")), signature="ia{sv}")
+                for i, p in by_item.items()
+            ],
+            signature="(ia{sv})",
+        )
+        self.ItemsPropertiesUpdated(updated, dbus.Array([], signature="(ias)"))
+
+    def _item_props(self, item_id, names):
+        props = self.items[item_id]
+        if names:
+            props = {k: v for k, v in props.items() if k in names}
+        return dbus.Dictionary(props, signature="sv")
+
+    def _layout(self, item_id, names, children):
+        return dbus.Struct(
+            (dbus.Int32(item_id), self._item_props(item_id, names), dbus.Array(children, signature="v")),
+            signature="ia{sv}av",
+        )
+
+    @dbus.service.method(MENU_IFACE, in_signature="iias", out_signature="u(ia{sv}av)")
+    def GetLayout(self, parent_id, depth, names):
+        if parent_id == 0:
+            children = [
+                dbus.Struct(self._layout(i, names, []), signature="ia{sv}av", variant_level=1)
+                for i in self.order
+            ] if depth != 0 else []
+            return dbus.UInt32(self.revision), self._layout(0, names, children)
+        if parent_id not in self.items:
+            raise dbus.exceptions.DBusException(f"Unknown menu item {parent_id}")
+        return dbus.UInt32(self.revision), self._layout(parent_id, names, [])
+
+    @dbus.service.method(MENU_IFACE, in_signature="aias", out_signature="a(ia{sv})")
+    def GetGroupProperties(self, ids, names):
+        ids = ids or [0, *self.order]
+        return dbus.Array(
+            [
+                dbus.Struct((dbus.Int32(i), self._item_props(i, names)), signature="ia{sv}")
+                for i in ids
+                if i in self.items
+            ],
+            signature="(ia{sv})",
+        )
+
+    @dbus.service.method(MENU_IFACE, in_signature="is", out_signature="v")
+    def GetProperty(self, item_id, name):
+        try:
+            return self.items[item_id][name]
+        except KeyError:
+            raise dbus.exceptions.DBusException(f"Unknown property {name} on item {item_id}")
+
+    @dbus.service.method(MENU_IFACE, in_signature="isvu")
+    def Event(self, item_id, event, data, timestamp):
+        if item_id == 0:
+            handler = {"opened": self.on_open, "closed": self.on_close}.get(event)
+            if handler:
+                handler()
+        elif event == "clicked" and item_id in self.callbacks:
+            self.callbacks[item_id]()
+
+    @dbus.service.method(MENU_IFACE, in_signature="a(isvu)", out_signature="ai")
+    def EventGroup(self, events):
+        missing = []
+        for item_id, event, data, timestamp in events:
+            if item_id != 0 and item_id not in self.items:
+                missing.append(item_id)
+            else:
+                self.Event(item_id, event, data, timestamp)
+        return dbus.Array(missing, signature="i")
+
+    @dbus.service.method(MENU_IFACE, in_signature="i", out_signature="b")
+    def AboutToShow(self, item_id):
+        if item_id == 0 and self.on_open:
+            self.on_open()
+        return False
+
+    @dbus.service.method(MENU_IFACE, in_signature="ai", out_signature="aiai")
+    def AboutToShowGroup(self, ids):
+        if 0 in ids and self.on_open:
+            self.on_open()
+        return dbus.Array([], signature="i"), dbus.Array([], signature="i")
+
+    @dbus.service.signal(MENU_IFACE, signature="a(ia{sv})a(ias)")
+    def ItemsPropertiesUpdated(self, updated, removed):
+        pass
+
+    @dbus.service.signal(MENU_IFACE, signature="ui")
+    def LayoutUpdated(self, revision, parent):
+        pass
+
+    dbus_properties = {
+        MENU_IFACE: {
+            "Version": lambda s: dbus.UInt32(3),
+            "TextDirection": lambda s: dbus.String("ltr"),
+            "Status": lambda s: dbus.String("normal"),
+            "IconThemePath": lambda s: dbus.Array([], signature="s"),
+        }
+    }
 
 
 class DevStackTray:
-    def __init__(self, app):
+    def __init__(self, app, bus):
         self.app = app
+        self.bus = bus
         self.states = {}
-        self.busy = False
+        self.menu_open = False
 
-        self.tray = QSystemTrayIcon()
-        self.menu = QMenu()
-
-        self.header = self.menu.addAction("")
-        self.header.setEnabled(False)
-        self.menu.addSeparator()
-        self.menu.addAction("Start all", lambda: self.run("start", UNITS))
-        self.menu.addAction("Stop all", lambda: self.run("stop", UNITS))
-        self.menu.addSeparator()
+        self.menu = DBusMenu(bus, on_open=self.on_menu_shown, on_close=self.on_menu_hidden)
+        self.header = self.menu.add("")
+        self.menu.update(self.header, enabled=False)
+        self.menu.add(separator=True)
+        self.menu.add("Start all", lambda: self.run("start", UNITS))
+        self.menu.add("Stop all", lambda: self.run("stop", UNITS))
+        self.menu.add(separator=True)
 
         self.actions = {}
         for unit, label in SERVICES:
-            action = QAction(label, self.menu)
-            action.setCheckable(True)
-            action.triggered.connect(
-                lambda checked, u=unit: self.run("start" if checked else "stop", [u])
-            )
-            self.menu.addAction(action)
-            self.actions[unit] = action
+            self.actions[unit] = self.menu.add(label, lambda u=unit: self.toggle(u), checkable=True)
 
-        self.menu.addSeparator()
-        self.menu.addAction("Quit", app.quit)
+        self.menu.add(separator=True)
+        self.menu.add("Quit", app.quit)
+        self.header_text = None
+        self.icon_key = None
 
-        self.menu_open = False
-        self.menu.aboutToShow.connect(self.on_menu_shown)
-        self.menu.aboutToHide.connect(self.on_menu_hidden)
-
-        self.tray.setContextMenu(self.menu)
-        self.tray.activated.connect(self.on_activated)
-
+        self.tray = StatusNotifierItem(bus, "Dev services")
         self.refresh_ui()
-        self.tray.show()
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.poll)
         self.timer.start(FAST_POLL_MS)
         self.poll()
+
+    def toggle(self, unit):
+        self.run("stop" if self.states.get(unit) == "active" else "start", [unit])
 
     def on_menu_shown(self):
         self.menu_open = True
@@ -145,10 +428,6 @@ class DevStackTray:
     def update_interval(self):
         busy = self.menu_open or any(s in TRANSITIONAL for s in self.states.values())
         self.timer.setInterval(FAST_POLL_MS if busy else IDLE_POLL_MS)
-
-    def on_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.menu.popup(QCursor.pos())
 
     def poll(self):
         # One is-active call per scope (system / user); apply once all have answered.
@@ -184,16 +463,22 @@ class DevStackTray:
 
     def refresh_ui(self):
         running = [u for u in UNITS if self.states.get(u) == "active"]
-        for unit, action in self.actions.items():
-            action.blockSignals(True)
-            action.setChecked(unit in running)
+        for unit, item_id in self.actions.items():
             # Wait for a starting/stopping/reloading service to settle before allowing a toggle.
-            action.setEnabled(self.states.get(unit) not in TRANSITIONAL)
-            action.blockSignals(False)
-        self.header.setText(f"Dev services: {len(running)}/{len(UNITS)} running")
-        self.tray.setIcon(make_icon(self.states))
-        lines = [f"{label}: {self.states.get(unit, '?')}" for unit, label in SERVICES]
-        self.tray.setToolTip("\n".join(lines))
+            self.menu.update(
+                item_id,
+                checked=unit in running,
+                enabled=self.states.get(unit) not in TRANSITIONAL,
+            )
+        self.menu.update(self.header, label=f"Dev services: {len(running)}/{len(UNITS)} running")
+        self.menu.flush()
+
+        icon_key = tuple(self.states.get(u) for u in UNITS)
+        if icon_key != self.icon_key:
+            self.icon_key = icon_key
+            self.tray.set_icon(make_icon(self.states))
+            lines = [f"{label}: {self.states.get(unit, '?')}" for unit, label in SERVICES]
+            self.tray.set_tooltip("\n".join(lines))
 
     def run(self, verb, units):
         # One systemctl call per unit: a multi-unit call is sent to systemd as a single
@@ -225,13 +510,20 @@ class DevStackTray:
 
     def on_run_done(self, verb, units, errors):
         if errors:
-            self.tray.showMessage(
-                f"Failed to {verb} {', '.join(units)}",
-                "\n".join(errors),
-                QSystemTrayIcon.MessageIcon.Warning,
-                5000,
-            )
+            self.notify(f"Failed to {verb} {', '.join(units)}", "\n".join(errors))
         self.poll()
+
+    def notify(self, summary, body):
+        try:
+            notifications = self.bus.get_object("org.freedesktop.Notifications", "/org/freedesktop/Notifications")
+            notifications.Notify(
+                "dev-stack-tray", 0, "dialog-warning", summary, body, [], {}, 5000,
+                dbus_interface="org.freedesktop.Notifications",
+                reply_handler=lambda *_: None,
+                error_handler=lambda e: print(f"{summary}: {body}", file=sys.stderr),
+            )
+        except dbus.DBusException:
+            print(f"{summary}: {body}", file=sys.stderr)
 
 
 def main():
@@ -240,6 +532,7 @@ def main():
         # User-manager units need no polkit rule.
         print("\n".join(unit if "." in unit else f"{unit}.service" for unit in UNITS if not unit.startswith("user:")))
         return
+    DBusGMainLoop(set_as_default=True)  # must precede the first bus connection
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("dev-stack-tray")
@@ -249,7 +542,7 @@ def main():
     if not lock.tryLock(100):
         return 0
 
-    tray = DevStackTray(app)  # noqa: F841 - kept alive for the event loop
+    tray = DevStackTray(app, dbus.SessionBus())  # noqa: F841 - kept alive for the event loop
     return app.exec()
 
 

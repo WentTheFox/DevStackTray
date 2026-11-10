@@ -13,7 +13,7 @@ The icon is a grid with one square per service:
 | Amber | starting, stopping or reloading |
 | Red   | failed  |
 
-Right-click (or left-click) the icon for a menu with **Start all**, **Stop all** and a checkbox per service.
+Left- or right-click the icon for a menu with **Start all**, **Stop all** and a checkbox per service.
 Hover the icon to see every service's state.
 
 The default services are `postgresql`, `valkey`, `php-fpm`, `nginx` and `opensearch`.
@@ -23,10 +23,10 @@ The default services are `postgresql`, `valkey`, `php-fpm`, `nginx` and `opensea
 These steps assume Arch Linux with KDE Plasma. Other distributions and desktops work as long as the desktop
 shows StatusNotifierItem tray icons and the packages below have equivalents.
 
-### 1. Install the services and PyQt6
+### 1. Install the services, PyQt6 and python-dbus
 
 ```sh
-sudo pacman -S nginx php php-fpm postgresql valkey opensearch python-pyqt6
+sudo pacman -S nginx php php-fpm postgresql valkey opensearch python-pyqt6 python-dbus
 ```
 
 OpenSearch is the Apache-licensed fork of Elasticsearch and is API-compatible for most dev use. Recent
